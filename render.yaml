@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: vasudha
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python backend/server.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: VASUDHA_SESSION_SECRET
+        generateValue: true
+      - key: VASUDHA_DISABLE_DEMO_ACCOUNTS
+        value: "true"
+    disk:
+      name: vasudha-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
