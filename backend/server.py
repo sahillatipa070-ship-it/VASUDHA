@@ -53,9 +53,31 @@ def osm_features(osm_id, osm_type='relation'):
         return cached[1]
     area_id = (3600000000 if osm_type == 'relation' else 2400000000) + int(osm_id)
     query = f'''[out:json][timeout:30];area({area_id})->.area;(nwr["waterway"~"^(river|stream|canal|drain|ditch)$"](area.area);nwr["natural"~"^(water|wetland|wood|scrub|grassland)$"](area.area);nwr["water"](area.area);nwr["landuse"~"^(forest|farmland|meadow|orchard|vineyard)$"](area.area););out geom 1200;'''
-    endpoint = os.environ.get('VASUDHA_OVERPASS_URL', 'https://overpass-api.de/api/interpreter')
     data = urlencode({'data': query}).encode()
-    result = external_json(endpoint, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'}, timeout=45)
+    # A single public Overpass instance is not reliable enough for a hosted app:
+    # Render may be unable to route to one host, or that instance may be busy.
+    # Keep the existing override first, then fail over to other global instances.
+    configured = os.environ.get('VASUDHA_OVERPASS_URL', '').strip()
+    fallback_urls = os.environ.get('VASUDHA_OVERPASS_FALLBACK_URLS', '').strip()
+    endpoints = [configured or 'https://overpass-api.de/api/interpreter']
+    if fallback_urls:
+        endpoints.extend(url.strip() for url in fallback_urls.split(',') if url.strip())
+    else:
+        endpoints.extend([
+            'https://overpass.private.coffee/api/interpreter',
+            'https://lz4.overpass-api.de/api/interpreter',
+        ])
+    endpoints = list(dict.fromkeys(endpoints))
+    errors = []
+    result = None
+    for endpoint in endpoints:
+        try:
+            result = external_json(endpoint, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'}, timeout=45)
+            break
+        except Exception as exc:
+            errors.append(f'{endpoint}: {exc}')
+    if result is None:
+        raise RuntimeError('all OpenStreetMap feature providers failed (' + '; '.join(errors) + ')')
     features = []
     for element in result.get('elements', []):
         tags = element.get('tags', {})
