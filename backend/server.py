@@ -52,7 +52,7 @@ def osm_features(osm_id, osm_type='relation'):
     if cached and time.time() - cached[0] < 3600:
         return cached[1]
     area_id = (3600000000 if osm_type == 'relation' else 2400000000) + int(osm_id)
-    query = f'''[out:json][timeout:30];area({area_id})->.area;(nwr["waterway"~"^(river|stream|canal|drain|ditch)$"](area.area);nwr["natural"~"^(water|wetland|wood|scrub|grassland)$"](area.area);nwr["water"](area.area);nwr["landuse"~"^(forest|farmland|meadow|orchard|vineyard)$"](area.area););out geom 1200;'''
+    query = f'''[out:json][timeout:30];area({area_id})->.area;(nwr["waterway"~"^(river|stream|canal|drain|ditch)$"](area.area);nwr["natural"~"^(water|wetland|wood|scrub|grassland)$"](area.area);nwr["water"](area.area);nwr["landuse"~"^(forest|farmland|meadow|orchard|vineyard)$"](area.area););out geom qt 1200;'''
     data = urlencode({'data': query}).encode()
     # A single public Overpass instance is not reliable enough for a hosted app:
     # Render may be unable to route to one host, or that instance may be busy.
@@ -65,6 +65,7 @@ def osm_features(osm_id, osm_type='relation'):
     else:
         endpoints.extend([
             'https://overpass.private.coffee/api/interpreter',
+            'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
             'https://lz4.overpass-api.de/api/interpreter',
         ])
     endpoints = list(dict.fromkeys(endpoints))
