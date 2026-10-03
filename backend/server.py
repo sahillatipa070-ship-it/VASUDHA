@@ -42,7 +42,7 @@ def geocode_places(query):
         geometry = item.get('geojson')
         if not geometry or geometry.get('type') not in ('Polygon', 'MultiPolygon') or item.get('osm_type') not in ('relation', 'way'):
             continue
-        places.append({'id': item['osm_id'], 'osm_type': item['osm_type'], 'name': item.get('name') or item.get('display_name', '').split(',')[0], 'display_name': item.get('display_name', ''), 'type': item.get('type', ''), 'geometry': geometry, 'bbox': item.get('boundingbox')})
+        places.append({'id': item['osm_id'], 'osm_type': item['osm_type'], 'name': item.get('name') or item.get('display_name', '').split(',')[0], 'display_name': item.get('display_name', ''), 'type': item.get('type', ''), 'geometry': geometry, 'bbox': item.get('boundingbox'), 'lat': float(item['lat']) if item.get('lat') else None, 'lon': float(item['lon']) if item.get('lon') else None})
     PLACE_CACHE[('search', key)] = (time.time(), places)
     return places
 
