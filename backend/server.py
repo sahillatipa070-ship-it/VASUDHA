@@ -46,13 +46,54 @@ def geocode_places(query):
     PLACE_CACHE[('search', key)] = (time.time(), places)
     return places
 
-def osm_features(osm_id, osm_type='relation'):
-    key = ('features', f'{osm_type}/{osm_id}')
+def _inside_boundary(lon, lat, boundary):
+    def ring_contains(ring):
+        inside = False
+        if not isinstance(ring, list) or len(ring) < 4: return False
+        for i, point in enumerate(ring):
+            previous = ring[i - 1]
+            xi, yi = point[:2]; xj, yj = previous[:2]
+            if ((yi > lat) != (yj > lat)) and lon < (xj - xi) * (lat - yi) / ((yj - yi) or 1e-12) + xi:
+                inside = not inside
+        return inside
+    polygons = boundary.get('coordinates', [])
+    if boundary.get('type') == 'Polygon': polygons = [polygons]
+    if boundary.get('type') != 'MultiPolygon' and boundary.get('type') != 'Polygon': return True
+    for polygon in polygons:
+        if polygon and ring_contains(polygon[0]) and not any(ring_contains(hole) for hole in polygon[1:]):
+            return True
+    return False
+
+def _feature_intersects_boundary(geometry, boundary):
+    def points(coords):
+        if isinstance(coords, (list, tuple)) and len(coords) >= 2 and all(isinstance(x, (int, float)) for x in coords[:2]):
+            return [(coords[0], coords[1])]
+        found = []
+        for item in coords if isinstance(coords, (list, tuple)) else []: found.extend(points(item))
+        return found
+    coords = points(geometry.get('coordinates', []))
+    return any(_inside_boundary(lon, lat, boundary) for lon, lat in coords)
+
+def osm_features(osm_id, osm_type='relation', bbox=None, boundary=None):
+    cache_bbox = ','.join(map(str, bbox)) if isinstance(bbox, (list, tuple)) else str(bbox or '')
+    key = ('features', f'{osm_type}/{osm_id}/{cache_bbox}/{"clipped" if boundary else "bbox"}')
     cached = PLACE_CACHE.get(key)
     if cached and time.time() - cached[0] < 3600:
         return cached[1]
-    area_id = (3600000000 if osm_type == 'relation' else 2400000000) + int(osm_id)
-    query = f'''[out:json][timeout:30];area({area_id})->.area;(nwr["waterway"~"^(river|stream|canal|drain|ditch)$"](area.area);nwr["natural"~"^(water|wetland|wood|scrub|grassland)$"](area.area);nwr["water"](area.area);nwr["landuse"~"^(forest|farmland|meadow|orchard|vineyard)$"](area.area););out geom qt 1200;'''
+    bbox_filter = ''
+    try:
+        if isinstance(bbox, str): bbox = bbox.split(',')
+        if bbox and len(bbox) == 4:
+            south, north, west, east = map(float, bbox)
+            if -90 <= south < north <= 90 and -180 <= west < east <= 180:
+                bbox_filter = f'({south},{west},{north},{east})'
+    except (TypeError, ValueError):
+        bbox_filter = ''
+    # The area operator times out on some hosted Overpass mirrors for large
+    # districts. A boundary bounding-box filter uses their spatial index, and
+    # returned features are clipped against the selected polygon below.
+    if not bbox_filter: raise ValueError('Selected area must include a valid bounding box.')
+    query = f'''[out:json][timeout:25];(nwr["waterway"~"^(river|stream|canal|drain|ditch)$"]{bbox_filter};nwr["natural"~"^(water|wetland|wood|scrub|grassland)$"]{bbox_filter};nwr["water"]{bbox_filter};nwr["landuse"~"^(forest|farmland|meadow|orchard|vineyard)$"]{bbox_filter};);out geom qt 1200;'''
     data = urlencode({'data': query}).encode()
     # A single public Overpass instance is not reliable enough for a hosted app:
     # Render may be unable to route to one host, or that instance may be busy.
@@ -73,7 +114,7 @@ def osm_features(osm_id, osm_type='relation'):
     result = None
     for endpoint in endpoints:
         try:
-            result = external_json(endpoint, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'}, timeout=45)
+            result = external_json(endpoint, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'}, timeout=35)
             break
         except Exception as exc:
             errors.append(f'{endpoint}: {exc}')
@@ -98,7 +139,8 @@ def osm_features(osm_id, osm_type='relation'):
         else:
             continue
         feature_type = 'drainage' if 'waterway' in tags else 'water-bodies' if 'water' in tags or tags.get('natural') in ('water', 'wetland') else 'vegetation' if tags.get('natural') in ('wood', 'scrub', 'grassland') or tags.get('landuse') in ('forest', 'orchard', 'vineyard') else 'landuse'
-        features.append({'type': 'Feature', 'id': f"{kind}/{element['id']}", 'properties': {'name': tags.get('name') or tags.get('waterway') or tags.get('natural') or tags.get('landuse') or 'Mapped feature', 'category': tags.get('natural') or tags.get('landuse') or tags.get('waterway') or tags.get('water') or 'feature', 'source': 'OpenStreetMap', 'layer': feature_type, **{k:v for k,v in tags.items() if k in ('name','waterway','natural','landuse','water','surface')}}, 'geometry': geometry})
+        feature = {'type': 'Feature', 'id': f"{kind}/{element['id']}", 'properties': {'name': tags.get('name') or tags.get('waterway') or tags.get('natural') or tags.get('landuse') or 'Mapped feature', 'category': tags.get('natural') or tags.get('landuse') or tags.get('waterway') or tags.get('water') or 'feature', 'source': 'OpenStreetMap', 'layer': feature_type, **{k:v for k,v in tags.items() if k in ('name','waterway','natural','landuse','water','surface')}}, 'geometry': geometry}
+        if not boundary or _feature_intersects_boundary(geometry, boundary): features.append(feature)
     collection = {'type': 'FeatureCollection', 'features': features}
     PLACE_CACHE[key] = (time.time(), collection)
     return collection
@@ -183,8 +225,10 @@ class Handler(SimpleHTTPRequestHandler):
                     params = parse_qs(urlparse(self.path).query)
                     osm_id = params.get('id',[''])[0]
                     osm_type = params.get('type',['relation'])[0]
+                    bbox = params.get('bbox',[''])[0].split(',')
                     if not osm_id.isdigit() or osm_type not in ('relation','way'): return self.send_json({'error':'Select a mapped boundary first.'},400)
-                    return self.send_json({'data':osm_features(osm_id,osm_type),'source':'OpenStreetMap'})
+                    if len(bbox)!=4 or not all(bbox): return self.send_json({'error':'Selected area must include a valid bounding box.'},400)
+                    return self.send_json({'data':osm_features(osm_id,osm_type,bbox),'source':'OpenStreetMap'})
                 except Exception as exc: return self.send_json({'error':f'OpenStreetMap features are temporarily unavailable: {exc}'},502)
             if path=='/api/health':return self.send_json({'status':'ok','database':'sqlite','data_sources':['OpenStreetMap','Coordinator field records'],'demo_seed_data_served':False})
             if path=='/api/auth/me':
@@ -228,6 +272,16 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         path=urlparse(self.path).path
+        if path == '/api/places/features':
+            try:
+                if int(self.headers.get('Content-Length','0')) > 2 * 1024 * 1024: return self.send_json({'error':'Selected boundary is too large to query.'},413)
+                d=self.body_json(); osm_id=str(d.get('id','')); osm_type=d.get('type','relation')
+                bbox=d.get('bbox'); boundary=d.get('geometry')
+                if not osm_id.isdigit() or osm_type not in ('relation','way'): return self.send_json({'error':'Select a mapped boundary first.'},400)
+                if not isinstance(bbox,list) or len(bbox)!=4 or not isinstance(boundary,dict) or boundary.get('type') not in ('Polygon','MultiPolygon'):
+                    return self.send_json({'error':'The selected boundary is missing its map geometry.'},400)
+                return self.send_json({'data':osm_features(osm_id,osm_type,bbox,boundary),'source':'OpenStreetMap'})
+            except Exception as exc: return self.send_json({'error':f'OpenStreetMap features are temporarily unavailable: {exc}'},502)
         if path=='/api/auth/register':
             d=self.body_json(); email=str(d.get('email','')).strip().lower(); pw=str(d.get('password','')); role=d.get('role','user')
             if role not in ('user','organization') or not email or len(pw)<10:return self.send_json({'error':'Enter a valid email and a password of at least 10 characters.'},400)
