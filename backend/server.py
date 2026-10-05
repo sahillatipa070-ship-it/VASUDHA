@@ -167,6 +167,7 @@ def init_db():
         ''')
         photo_columns={r['name'] for r in c.execute('PRAGMA table_info(photos)')}
         if 'time' not in photo_columns:c.execute("ALTER TABLE photos ADD COLUMN time TEXT NOT NULL DEFAULT ''")
+        if 'phase' not in photo_columns:c.execute("ALTER TABLE photos ADD COLUMN phase TEXT NOT NULL DEFAULT ''")
         intervention_columns={r['name'] for r in c.execute('PRAGMA table_info(interventions)')}
         if 'is_demo' not in intervention_columns:
             c.execute('ALTER TABLE interventions ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0')
@@ -347,16 +348,18 @@ class Handler(SimpleHTTPRequestHandler):
             if not (filedata.startswith(b'\xff\xd8\xff') if ext in ('.jpg','.jpeg') else filedata.startswith(b'\x89PNG\r\n\x1a\n') if ext=='.png' else filedata[:4]==b'RIFF' and filedata[8:12]==b'WEBP'):return self.send_json({'error':'The selected file does not match its image format.'},400)
             try:lat=float(fields['lat']); lng=float(fields['lng']); assert -90<=lat<=90 and -180<=lng<=180 and fields['location'].strip() and fields['taken_at'].strip()
             except Exception:return self.send_json({'error':'Enter a location, valid latitude and longitude, and date.'},400)
+            phase=fields.get('phase','').strip().lower()
+            if phase not in ('before','after','progress'):return self.send_json({'error':'Choose whether this photo shows before, after, or progress.'},400)
             safe=f'{uuid.uuid4().hex}{ext}'; (UPLOADS/safe).write_bytes(filedata)
             with connect() as c:
                 intervention_id=int(fields['intervention_id']) if fields.get('intervention_id') else None
                 if intervention_id and not c.execute('SELECT 1 FROM interventions WHERE id=? AND is_demo=0',(intervention_id,)).fetchone():return self.send_json({'error':'Choose a saved Coordinator intervention or leave it unassociated.'},400)
-                c.execute('INSERT INTO photos(filename,original_name,location,lat,lng,taken_at,time,description,watershed_id,intervention_id,uploader_id,created_at) VALUES(?,?,?,?,?,?,?,?,NULL,?,?,?)',(safe,filename,fields['location'].strip(),lat,lng,fields['taken_at'],fields.get('time',''),fields.get('description',''),intervention_id,user['id'],datetime.now(timezone.utc).isoformat()))
+                c.execute('INSERT INTO photos(filename,original_name,location,lat,lng,taken_at,time,phase,description,watershed_id,intervention_id,uploader_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,?,?)',(safe,filename,fields['location'].strip(),lat,lng,fields['taken_at'],fields.get('time',''),phase,fields.get('description',''),intervention_id,user['id'],datetime.now(timezone.utc).isoformat()))
                 row=dict(c.execute('SELECT * FROM photos ORDER BY id DESC LIMIT 1').fetchone())
             return self.send_json({'photo':row,'url':'/api/uploads/'+safe},201)
         if path=='/api/reports/export':
             with connect() as c:
-                data={'source':'Coordinator field records','interventions':[dict(x) for x in c.execute('SELECT * FROM interventions WHERE is_demo=0 ORDER BY date DESC,id DESC')],'photos':[dict(x) for x in c.execute('SELECT id,location,lat,lng,taken_at,description,intervention_id FROM photos ORDER BY id DESC')]}
+                data={'source':'Coordinator field records','interventions':[dict(x) for x in c.execute('SELECT * FROM interventions WHERE is_demo=0 ORDER BY date DESC,id DESC')],'photos':[dict(x) for x in c.execute('SELECT id,location,lat,lng,taken_at,phase,description,intervention_id FROM photos ORDER BY id DESC')]}
             return self.send_json(data)
         return self.send_json({'error':'Not found'},404)
 
