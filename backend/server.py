@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import Request, urlopen
 import hashlib, hmac, json, mimetypes, os, secrets, sqlite3, time, uuid, threading
+from email.message import Message
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -333,15 +334,15 @@ class Handler(SimpleHTTPRequestHandler):
             if length>MAX_UPLOAD+1024*1024:return self.send_json({'error':'Image is too large. Maximum size is 20 MB.'},413)
             ctype=self.headers.get('Content-Type','')
             if 'multipart/form-data' not in ctype:return self.send_json({'error':'Use multipart form data.'},400)
-            raw=self.rfile.read(length); boundary=ctype.split('boundary=',1)[-1].strip('"').encode(); fields={}; filedata=None; filename=''
+            raw=self.rfile.read(length); boundary=ctype.split('boundary=',1)[-1].split(';',1)[0].strip(' "').encode(); fields={}; filedata=None; filename=''
             for part in raw.split(b'--'+boundary):
                 if b'\r\n\r\n' not in part:continue
                 head,content=part.split(b'\r\n\r\n',1); content=content.removesuffix(b'\r\n').removesuffix(b'--\r\n')
-                h=head.decode('latin1','ignore'); name=''
-                for item in h.split(';'):
-                    if 'name=' in item:name=item.split('name=',1)[1].strip(' "')
-                    if 'filename=' in item:filename=Path(item.split('filename=',1)[1].strip(' "')).name; filedata=content
-                if name and 'filename=' not in h:fields[name]=content.decode('utf8','replace')
+                headers=head.decode('latin1','ignore').split('\r\n'); disposition=next((line.split(':',1)[1].strip() for line in headers if line.lower().startswith('content-disposition:')),'')
+                message=Message(); message['Content-Disposition']=disposition
+                name=message.get_param('name',header='Content-Disposition'); uploaded_name=message.get_filename()
+                if uploaded_name is not None:filename=Path(uploaded_name.replace('\\','/')).name; filedata=content
+                elif name:fields[str(name)]=content.decode('utf8','replace')
             if not filedata:return self.send_json({'error':'Choose an image file to upload.'},400)
             ext=Path(filename).suffix.lower(); allowed={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'}
             if len(filedata)>MAX_UPLOAD:return self.send_json({'error':'Image is too large. Maximum size is 20 MB.'},413)
