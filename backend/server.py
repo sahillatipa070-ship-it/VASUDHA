@@ -13,7 +13,7 @@ WEB = ROOT / 'frontend'
 UPLOADS.mkdir(parents=True, exist_ok=True)
 DB.parent.mkdir(parents=True, exist_ok=True)
 SECRET = os.environ.get('VASUDHA_SESSION_SECRET', 'local-demo-secret-change-before-deployment')
-MAX_UPLOAD = 8 * 1024 * 1024
+MAX_UPLOAD = 20 * 1024 * 1024
 PLACE_CACHE = {}
 PLACE_LOCK = threading.Lock()
 LAST_GEOCODE = 0.0
@@ -330,7 +330,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not user:return self.send_json({'error':'Sign in to upload photos.'},401)
             if user['role']!='organization':return self.send_json({'error':'Photo uploads are available to organization accounts only.'},403)
             length=int(self.headers.get('Content-Length','0'))
-            if length>MAX_UPLOAD+1024*1024:return self.send_json({'error':'Image is too large. Maximum size is 8 MB.'},413)
+            if length>MAX_UPLOAD+1024*1024:return self.send_json({'error':'Image is too large. Maximum size is 20 MB.'},413)
             ctype=self.headers.get('Content-Type','')
             if 'multipart/form-data' not in ctype:return self.send_json({'error':'Use multipart form data.'},400)
             raw=self.rfile.read(length); boundary=ctype.split('boundary=',1)[-1].strip('"').encode(); fields={}; filedata=None; filename=''
@@ -344,7 +344,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if name and 'filename=' not in h:fields[name]=content.decode('utf8','replace')
             if not filedata:return self.send_json({'error':'Choose an image file to upload.'},400)
             ext=Path(filename).suffix.lower(); allowed={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'}
-            if ext not in allowed or len(filedata)>MAX_UPLOAD:return self.send_json({'error':'Use JPG, PNG, or WEBP images up to 8 MB.'},400)
+            if len(filedata)>MAX_UPLOAD:return self.send_json({'error':'Image is too large. Maximum size is 20 MB.'},413)
+            if ext not in allowed:return self.send_json({'error':'Choose a .jpg, .jpeg, .png, or .webp image.'},400)
             if not (filedata.startswith(b'\xff\xd8\xff') if ext in ('.jpg','.jpeg') else filedata.startswith(b'\x89PNG\r\n\x1a\n') if ext=='.png' else filedata[:4]==b'RIFF' and filedata[8:12]==b'WEBP'):return self.send_json({'error':'The selected file does not match its image format.'},400)
             try:lat=float(fields['lat']); lng=float(fields['lng']); assert -90<=lat<=90 and -180<=lng<=180 and fields['location'].strip() and fields['taken_at'].strip()
             except Exception:return self.send_json({'error':'Enter a location, valid latitude and longitude, and date.'},400)
